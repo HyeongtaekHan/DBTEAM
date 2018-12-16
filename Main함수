@@ -1,0 +1,156 @@
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Scanner;
+import java.util.Set;
+
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
+
+public class redisProject {
+
+	public static void main(String[] args) {
+		// TODO Auto-generated method stub
+		
+		// Redis 연결을 위한 코드 
+		JedisPool pool = new JedisPool(new JedisPoolConfig(), "localhost");
+		
+		System.out.println("Try to connect with Redis...");
+		Jedis jedis = tryToConnectRedis(pool);
+		if(jedis == null) {
+			System.out.println("[CONNECTION_EROOR] Failed to connect with Redis. ");
+			System.exit(1);
+		}
+		
+		
+		while(true) {
+			
+			// 쿼리 입력 후 쿼리 첫 단어에 따라 함수 실행 
+			System.out.print("Program Query Input > ");
+			Scanner s = new Scanner(System.in);
+			String query = s.nextLine();
+			query = query.toUpperCase();		// 쿼리문을 다 대문자로 변환했음 따라서 테이블 명 다 대문자 처리 
+			String query_split[] = query.split(" ");	// 쿼리문을 띄어쓰기 단위로 짤라서 string 배열에 담음 
+			
+			switch(query_split[0]) {
+			case "SHOW" :
+				SHOW_TABLES(jedis);
+				break;
+			case "CREATE" :
+				CREATE_TABLE(jedis, query_split);
+				break;
+			case "INSERT" :
+				INSERT_INTO(jedis,query_split);
+				break;
+			case "SELECT" :
+				SELECT(jedis, query_split);
+				break;	
+			case "EXIT" :
+				return;
+			default:
+				System.out.println("Query was not correct");
+			}
+		}
+		
+	}
+	
+	// redis 연결 함수 
+	public static Jedis tryToConnectRedis(JedisPool pool) {
+		try {
+			return pool.getResource();
+		} catch (Exception exception) {
+			return null;
+		}
+	}
+	
+	// SHOW_TABLES 함수 테이블 리스트를 redis 내의 list(리스트명 "tablelists")로 보여줌 
+	public static void SHOW_TABLES(Jedis jedis) {
+		if(jedis.llen("tablelists") == 0) {
+			System.out.println("");
+			System.out.println("=================");
+			System.out.println("Table list");
+			System.out.println("=================");
+			System.out.println("");
+			System.out.println("=================");
+			System.out.println("");
+			return;
+			}
+		
+		
+		System.out.println("");
+		System.out.println("=================");
+		System.out.println("Table list");
+		System.out.println("=================");
+		for(int i=0;i<jedis.llen("tablelists");i++) {
+			System.out.println(jedis.lindex("tablelists", i));
+		}
+		System.out.println("=================");
+		System.out.println("");
+	}
+	
+	// CREATE TABLE 함수 - 테이블을 추가하면 먼저 테이블명만 모아놓은 tablelists에 추가 하고
+	// table_name_schema 이라는 hashset 에 그 테이블 정보, entry 수, 스키마 정보를 집어넣는다.
+	// , 와 ; 와 괄호등 불필요한 부호들을 제외해준다.
+	public static void CREATE_TABLE(Jedis jedis, String[] query_split) {
+		String table_name = query_split[2];
+		String rep_query[] = new String[query_split.length-3];
+		jedis.rpush("tablelists", table_name);
+		jedis.hset(table_name+"_schema", "entry_num", "0");
+		for(int i=3;i<query_split.length;i++) {
+			String str_rep;
+			str_rep = query_split[i].replace(",", "");
+			if(i==3)
+				str_rep = str_rep.replace("(","");
+			if(i==query_split.length-1) {
+				str_rep = str_rep.replace(")","");
+				str_rep = str_rep.replace(";","");
+			}
+			rep_query[i-3] = str_rep;
+		}
+		for(int i=0; i<rep_query.length;i+=2)
+			jedis.hset(table_name+"_schema", rep_query[i], rep_query[i+1]);
+		
+		SHOW_TABLES(jedis);
+	}
+	
+	// INSERT INTO 함수 - table_name_schema 에 맞춰 값들을 저장하는데
+	// tabe_name_entry_num 이라는 hashset에 스키마에 맞는 값들을 저장해주고
+	// tabe_name_schema 의 entry_num 값을 1 증가시켜준다.
+	
+	public static void INSERT_INTO(Jedis jedis, String [] query_split) {
+		String table_name = query_split[2];
+		String rep_query[] = new String[query_split.length-4];
+		List schema_list = new ArrayList(jedis.hkeys(table_name+"_schema"));
+		String entry_num_string = jedis.hget(table_name+"_schema","entry_num");
+		int entry_num_int = Integer.parseInt(jedis.hget(table_name+"_schema","entry_num"));
+		for(int i=4;i<query_split.length;i++) {
+			String str_rep;
+			str_rep = query_split[i].replace(",", "");
+			str_rep = str_rep.replace("\"", "");
+			if(i==4)
+				str_rep = str_rep.replace("(","");
+			if(i==query_split.length-1) {
+				str_rep = str_rep.replace(")","");
+				str_rep = str_rep.replace(";","");
+			}
+			rep_query[i-4] = str_rep;
+		}
+
+		for(int i=1;i<schema_list.size();i++) 
+			jedis.hset(table_name+"_"+entry_num_string, (String) schema_list.get(i), rep_query[i-1]);
+		
+		jedis.hset(table_name+"_schema","entry_num",String.valueOf(++entry_num_int));
+		System.out.println("INSERT SUCCESS : TABLE "+table_name+" has "+entry_num_int+" rows.");
+
+	}
+	
+	// SELECT 함수 - 테이블을 추가하면 먼저 SELECT column, FROM column, WHERE column 부분으로 parse한다
+	// 예) SELECT * FROM student where number > 2000 and ((number < 3000 and name = "dykim") or name = "totoro"); 같은 경우
+  // *,  student, number > 2000 and (number < 3000 and name = "dykim") or name = "totoro" 이런 식으로 parsing 해야함
+	// , 와 ; 와 괄호등 불필요한 부호들을 제외해준다.
+	public static void SELECT(Jedis jedis, String[] query_split) {
+
+	}
+
+}
